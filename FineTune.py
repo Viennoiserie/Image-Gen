@@ -16,7 +16,7 @@ from transformers import CLIPTextModel, CLIPTokenizer, get_scheduler
 # region : Model Setup
 
 # Authentication
-login("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")
+login("my_token")
 
 # Load pre-trained Stable Diffusion pipeline
 model_name = "CompVis/stable-diffusion-v1-4"
