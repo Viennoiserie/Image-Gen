@@ -27,7 +27,7 @@ warnings.filterwarnings("ignore", message=".*diffusion_pytorch_model.safetensors
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 
 # Authentication
-login("KEY")
+login("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")
 
 # endregion
 
@@ -102,7 +102,7 @@ def forward_function(pixel_values, timesteps, text_embeddings):
     return unet(sample=pixel_values, timestep=timesteps, encoder_hidden_states=text_embeddings)
 
 def adjust_batch_size(train_dataloader, max_mem_alloc):
-    
+
     # Check if the current memory allocation exceeds the limit
     allocated_mem = torch.cuda.memory_allocated() / 1e9  
 
@@ -142,7 +142,7 @@ for epoch in range(num_epochs):
 
             try:
                 # Forward pass with checkpointing
-                outputs = torch.utils.checkpoint.checkpoint(forward_function, pixel_values, timesteps, text_embeddings)
+                outputs = torch.utils.checkpoint.checkpoint(forward_function, pixel_values, timesteps, text_embeddings, use_reentrant=False)
                 loss = outputs.loss
 
             except RuntimeError as e:
