@@ -1,9 +1,12 @@
 # region : Imports
 
+import os
+import gc
 import torch
+import torch.utils.checkpoint
 
 from torch.optim import AdamW
-from torch.amp import GradScaler 
+from torch.amp import GradScaler
 from huggingface_hub import login
 from torchvision import transforms
 from ImageDataset import ImageDataset
@@ -13,23 +16,32 @@ from transformers import CLIPTextModel, CLIPTokenizer, get_scheduler
 
 # endregion
 
-# region : Model Setup
+# region : Setup
+
+# Avoid fragmentation (although unsupported on your platform)
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 # Authentication
-login("my_token")
-
-# Load pre-trained Stable Diffusion pipeline
-model_name = "CompVis/stable-diffusion-v1-4"
-pipeline = StableDiffusionPipeline.from_pretrained(model_name, torch_dtype=torch.float16).to("cuda")
-
-# Load components for fine-tuning
-text_encoder = CLIPTextModel.from_pretrained(model_name).to("cuda")
-unet = UNet2DConditionModel.from_pretrained(model_name).to("cuda")
-tokenizer = CLIPTokenizer.from_pretrained(model_name)
+login("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")
 
 # endregion
 
-# region : Variables Setup
+# region : Model
+
+# Load pre-trained Stable Diffusion pipeline (using a smaller model if needed)
+model_name = "CompVis/stable-diffusion-v1-2"
+
+# Ensure the model files are correctly downloaded from HuggingFace
+pipeline = StableDiffusionPipeline.from_pretrained(model_name, torch_dtype=torch.float16).to("cuda")
+
+# Load components for fine-tuning
+unet = UNet2DConditionModel.from_pretrained("CompVis/stable-diffusion-v1-2", subfolder="unet").to("cuda")
+text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to("cuda")
+tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+
+# endregion
+
+# region : Preparation
 
 # File paths
 image_folder = r"C:\Users\thoma\Documents\Thomas - SSD\IA - Image Generator\Dataset\main_DATASET\images"
@@ -38,7 +50,7 @@ description_file = r"C:\Users\thoma\Documents\Thomas - SSD\IA - Image Generator\
 # Transformations for images
 transform = transforms.Compose([
 
-    transforms.Resize((512, 512)),
+    transforms.Resize((128, 128)),  
     transforms.RandomHorizontalFlip(),
 
     transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
@@ -49,22 +61,21 @@ transform = transforms.Compose([
 
 # Load dataset and create DataLoader
 dataset = ImageDataset(image_folder, description_file, transform=transform)
-train_dataloader = DataLoader(dataset, batch_size=1, shuffle=True)  # Batch size 1 for VRAM efficiency
-
-# endregion
-
-# region : Training Preparation
+train_dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
 
 # Optimizer
 optimizer = AdamW(unet.parameters(), lr=1e-5, weight_decay=0.01)
 
 # Scheduler
-num_training_steps = len(train_dataloader) * 10  # Adjust for number of epochs
+num_training_steps = len(train_dataloader) * 10  
 
 lr_scheduler = get_scheduler(
+
     "cosine",
+
     optimizer=optimizer,
-    num_warmup_steps=500,  
+    num_warmup_steps=500,
+
     num_training_steps=num_training_steps
 )
 
@@ -72,15 +83,34 @@ lr_scheduler = get_scheduler(
 scaler = GradScaler()
 
 # Gradient accumulation
-gradient_accumulation_steps = 4
+gradient_accumulation_steps = 2  
 accumulated_loss = 0.0
 
 # endregion
 
 # region : Training
 
-# Training loop
-num_epochs = 10  # Increase epochs for better results
+def forward_function(pixel_values, timesteps, text_embeddings):
+    return unet(sample=pixel_values, timestep=timesteps, encoder_hidden_states=text_embeddings)
+
+def adjust_batch_size(train_dataloader, max_mem_alloc):
+    # Check if the current memory allocation exceeds the limit
+    allocated_mem = torch.cuda.memory_allocated() / 1e9  
+
+    if allocated_mem > max_mem_alloc:
+        
+        print(f"Warning: Memory allocation too high ({allocated_mem:.2f} GB). Reducing batch size.")
+        new_batch_size = max(1, train_dataloader.batch_size // 2)
+        print(f"New batch size: {new_batch_size}")
+        
+        # Recreate the DataLoader with the new batch size
+        new_dataloader = DataLoader(dataset, batch_size=new_batch_size, shuffle=True)
+        return new_dataloader
+
+    return train_dataloader
+
+num_epochs = 1
+max_mem_alloc = 4 
 
 for epoch in range(num_epochs):
 
@@ -88,21 +118,30 @@ for epoch in range(num_epochs):
 
     for step, batch in enumerate(train_dataloader):
 
+        # Adjust batch size if necessary based on available memory
+        train_dataloader = adjust_batch_size(train_dataloader, max_mem_alloc)
+
         images, descriptions = batch
 
-        # Tokenize text prompts
-        inputs = tokenizer(descriptions, padding="max_length", max_length=77, return_tensors="pt")
+        inputs = tokenizer(descriptions, padding="max_length", truncation=True, max_length=77, return_tensors="pt")
         input_ids = inputs.input_ids.to("cuda")
 
-        # Move images to GPU
+        text_embeddings = text_encoder(input_ids).last_hidden_state
         pixel_values = images.to("cuda")
 
-        # Forward pass with mixed precision
-        with torch.autocast(device_type='cuda', dtype=torch.float16):
-            outputs = unet(pixel_values, input_ids=input_ids)
-            loss = outputs.loss  
+        timesteps = torch.randint(0, 500, (pixel_values.shape[0],), device="cuda").long()
 
-        # Backward pass with gradient accumulation
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+
+            try:
+                # Forward pass with checkpointing
+                outputs = torch.utils.checkpoint.checkpoint(forward_function, pixel_values, timesteps, text_embeddings)
+                loss = outputs.loss
+
+            except RuntimeError as e:
+                print(f"Error during checkpointing: {e}")
+                continue
+
         scaler.scale(loss).backward()
         accumulated_loss += loss.item()
 
@@ -110,16 +149,25 @@ for epoch in range(num_epochs):
 
             scaler.step(optimizer)
             scaler.update()
-            optimizer.zero_grad()
 
-            # Scheduler step
+            optimizer.zero_grad()
             lr_scheduler.step()
 
-            # Log progress
             print(f"Epoch {epoch + 1}, Step {step + 1}, Loss: {accumulated_loss / gradient_accumulation_steps:.4f}")
             accumulated_loss = 0.0
 
+        # Clear GPU memory periodically
+        torch.cuda.empty_cache()
+
+    # Run garbage collection after each epoch
+    gc.collect()
+
+    # Print memory summary
+    print(f"GPU Memory Allocated: {torch.cuda.memory_allocated() / 1e9} GB")
+    print(f"GPU Memory Cached: {torch.cuda.memory_reserved() / 1e9} GB")
+    print(torch.cuda.memory_summary(device=None, abbreviated=False))
+
     # Save intermediate model checkpoints
-    pipeline.save_pretrained(f"fine_tuned_model_epoch_{epoch + 1}")
+    pipeline.save_pretrained(r"C:\Users\thoma\Documents\Thomas - SSD\IA - Image Generator\Models\{epoch + 1}")
 
 # endregion
