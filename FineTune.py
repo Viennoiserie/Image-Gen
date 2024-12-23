@@ -22,7 +22,7 @@ from transformers import CLIPTextModel, CLIPTokenizer, get_scheduler
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 # Authentication
-login("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")
+login("My_Key")
 
 # endregion
 
