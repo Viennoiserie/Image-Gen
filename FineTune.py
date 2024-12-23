@@ -27,7 +27,7 @@ warnings.filterwarnings("ignore", message=".*diffusion_pytorch_model.safetensors
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 
 # Authentication
-login("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")
+login("KEY")
 
 # endregion
 
