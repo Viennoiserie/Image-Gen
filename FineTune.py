@@ -3,6 +3,7 @@
 import os
 import gc
 import torch
+import warnings
 import torch.utils.checkpoint
 
 from torch.optim import AdamW
@@ -18,11 +19,15 @@ from transformers import CLIPTextModel, CLIPTokenizer, get_scheduler
 
 # region : Setup
 
-# Avoid fragmentation (although unsupported on your platform)
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# Suppress specific warnings
+warnings.filterwarnings("ignore", message=".*expandable_segments.*")
+warnings.filterwarnings("ignore", message=".*diffusion_pytorch_model.safetensors.*")
+
+# Avoid fragmentation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 
 # Authentication
-login("My_Key")
+login("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")
 
 # endregion
 
@@ -31,8 +36,11 @@ login("My_Key")
 # Load pre-trained Stable Diffusion pipeline (using a smaller model if needed)
 model_name = "CompVis/stable-diffusion-v1-2"
 
-# Ensure the model files are correctly downloaded from HuggingFace
-pipeline = StableDiffusionPipeline.from_pretrained(model_name, torch_dtype=torch.float16).to("cuda")
+try:
+    pipeline = StableDiffusionPipeline.from_pretrained(model_name, torch_dtype=torch.float16).to("cuda")
+
+except Exception as e:
+    print(f"Error loading pipeline: {e}")
 
 # Load components for fine-tuning
 unet = UNet2DConditionModel.from_pretrained("CompVis/stable-diffusion-v1-2", subfolder="unet").to("cuda")
@@ -50,7 +58,7 @@ description_file = r"C:\Users\thoma\Documents\Thomas - SSD\IA - Image Generator\
 # Transformations for images
 transform = transforms.Compose([
 
-    transforms.Resize((128, 128)),  
+    transforms.Resize((64, 64)),  
     transforms.RandomHorizontalFlip(),
 
     transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
@@ -94,14 +102,13 @@ def forward_function(pixel_values, timesteps, text_embeddings):
     return unet(sample=pixel_values, timestep=timesteps, encoder_hidden_states=text_embeddings)
 
 def adjust_batch_size(train_dataloader, max_mem_alloc):
+    
     # Check if the current memory allocation exceeds the limit
     allocated_mem = torch.cuda.memory_allocated() / 1e9  
 
     if allocated_mem > max_mem_alloc:
         
-        print(f"Warning: Memory allocation too high ({allocated_mem:.2f} GB). Reducing batch size.")
         new_batch_size = max(1, train_dataloader.batch_size // 2)
-        print(f"New batch size: {new_batch_size}")
         
         # Recreate the DataLoader with the new batch size
         new_dataloader = DataLoader(dataset, batch_size=new_batch_size, shuffle=True)
@@ -168,6 +175,7 @@ for epoch in range(num_epochs):
     print(torch.cuda.memory_summary(device=None, abbreviated=False))
 
     # Save intermediate model checkpoints
-    pipeline.save_pretrained(r"C:\Users\thoma\Documents\Thomas - SSD\IA - Image Generator\Models\{epoch + 1}")
+    checkpoint_path = r"C:\Users\thoma\Documents\Thomas - SSD\IA - Image Generator\Models\fine_tuned_model_epoch_{epoch + 1}"
+    pipeline.save_pretrained(checkpoint_path)
 
 # endregion
