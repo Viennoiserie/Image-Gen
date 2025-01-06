@@ -119,14 +119,14 @@ def adjust_batch_size(train_dataloader, max_mem_alloc):
 num_epochs = 1
 max_mem_alloc = 4 
 
+# Adjust batch size if necessary based on available memory
+train_dataloader = adjust_batch_size(train_dataloader, max_mem_alloc)
+
 for epoch in range(num_epochs):
 
     print(f"Starting epoch {epoch + 1}/{num_epochs}")
 
     for step, batch in enumerate(train_dataloader):
-
-        # Adjust batch size if necessary based on available memory
-        train_dataloader = adjust_batch_size(train_dataloader, max_mem_alloc)
 
         images, descriptions = batch
 
